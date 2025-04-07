@@ -1,0 +1,176 @@
+
+###    SEQUENZIAMENTO DNA GENOMICO x CHIAMATA VARIANTI       ########
+
+
+#####################################################################
+#### Input prep and alignment
+# P2-solo
+zcat /data/gDNA_Papi_UR_UG/47-UG/20250325_1549_P2I-00111-B_PBC11064_cc771c5e/fastq_pass/*.fastq.gz > /data/47_UG.fastq
+zcat /data/gDNA_Papi_UR_UG/47-UR/20250325_1549_P2I-00111-A_PBC10462_1d308e3d/fastq_pass/*.fastq.gz > /data/47_UR.fastq
+
+
+#####################################################################
+#####################################################################
+# From now go as always
+
+
+NanoPlot -t 60 --fastq 47_UG.fastq  --outdir Nanoplot_47_UG --plots hex dot
+NanoPlot -t 60 --fastq 47_UR.fastq  --outdir Nanoplot_47_UR  --plots hex dot
+
+
+#check for correct align parameters
+# run with -L if CIGAR (and basepair) per reads are > 65535
+
+
+# Per l'amor di Cristo gesu non metterci t perchè non è threads pd
+filtlong  --min_length 1000 --keep_percent 90 47_UG.fastq > 47_UG.filtered.fastq
+filtlong  --min_length 1000 --keep_percent 90 47_UR.fastq > 47_UR.filtered.fastq
+
+
+minimap2 -t 60 -ax map-ont /home/nasslab/ref/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna 47_UG.filtered.fastq  > 47_UG_aln.sam
+minimap2 -t 60 -ax map-ont /home/nasslab/ref/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna 47_UR.filtered.fastq  > 47_UR_aln.sam
+
+
+#####################################################################
+#### QC alignment
+
+
+samtools view -S -b 47_UG_aln.sam > 47_UG.bam
+samtools sort --threads 64 -o 47_UG.sorted.bam 47_UG.bam
+samtools index 47_UG_sorted.bam
+
+
+samtools view -S --threads 64 -b 47_UR_aln.sam > 47_UR.bam
+samtools sort --threads 64 -o 47_UR.sorted.bam 47_UR.bam
+samtools index 47_UR_sorted.bam
+
+
+##depth sequencing moshdepth
+# 1) modo. !!!!!HO USATO QUESTO!!!!!!
+mosdepth -t 60 -n --fast-mode --by 500 --d4 47_UG.wgs 47_UG.sorted.bam
+mosdepth -t 60 --chrom 16 -n --fast-mode --by 500 --d4 PALB2.chrom16 47_UG.sorted.bam
+
+mosdepth -t 60 -n --fast-mode --by 500 --d4 47_UR.wgs 47_UR.sorted.bam
+mosdepth -t 60 --chrom 16 -n --fast-mode --by 500 --d4 PALB2.chrom16 47_UR_sorted.bam
+
+
+# 2) modo
+mosdepth -t 64 -x -b 1000 -Q 20 "47_UR.sorted.bam"
+mosdepth -t 64 -x -b 1000 -Q 20 "47_UG.sorted.bam"
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+# CHIAMATA DELLE VARIANTI --> VCF
+conda activate variant_call
+
+
+#####################################################################
+#### VC sniffles/sniffles2 & CuteSV
+# normal
+sniffles -t 60 --reference /home/nasslab/ref/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna -i 47_UG_sorted.bam -v 47_UG.sniffles.vcf
+sniffles -t 60 --reference /home/nasslab/ref/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna -i 47_UR_sorted.bam -v 47_UR.sniffles.vcf
+
+
+# adding tandem repeatition annotation to improve this part
+# annotations.bed can be downloaded in https://github.com/fritzsedlazeck/Sniffles/tree/master/annotations
+sniffles -t 60 --reference /home/nasslab/ref/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna --tandem-repeats annotations.bed -i 47_UG_sorted.bam -v 47_UG_ex_sniffles.vcf
+sniffles -t 60 --reference /home/nasslab/ref/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna --tandem-repeats annotations.bed -i 47_UR_sorted.bam -v 47_UR_ex_sniffles.vcf
+
+
+
+
+#####################################################################
+#### CuteSV
+cuteSV 47_UR.sorted.bam GCA_000001405.15_GRCh38_no_alt_analysis_set.fna 47UR.cutesv.vcf /data/palb2/ --max_cluster_bias_INS 100 --diff_ratio_merging_INS 0.3 --max_cluster_bias_DEL 100 --diff_ratio_merging_DEL 0.3
+cuteSV 47_UG.sorted.bam GCA_000001405.15_GRCh38_no_alt_analysis_set.fna 47UG.cutesv.vcf /data/palb2/ --max_cluster_bias_INS 100 --diff_ratio_merging_INS 0.3 --max_cluster_bias_DEL 100 --diff_ratio_merging_DEL 0.3
+
+
+
+
+
+#####################################################################
+#### snpEff annoto le varianti chiamate da sniffles
+---------------------------------------------------------------------------------------------
+# download database 
+http://snpeff.sourceforge.net/
+#scarica ed estrai
+#entro nella directory dove si trova snpEff.jar e lancio:
+java -jar /data/palb2/snpEff/snpEff.jar download GRCh38.86
+#se non funziona, magari non riesce a recuperare il databsae online perche i link non funzionano. quindi provare a cercare altri database in snpEff:
+java -jar snpEff.jar databases | less
+# mostra tutti i database presenti ed i relativi link
+-------------------------------------------------------------------------------------------
+
+#ricambio directory dove ho i miei file .sniffles.vcf
+cd /data/palb2
+
+#lancio snpEff
+java -Xmx8g -jar /data/palb2/snpEff/snpEff.jar GRCh38.86 47_UG.sniffles.vcf > 47_UG.ann.vcf
+java -Xmx8g -jar /data/palb2/snpEff/snpEff.jar GRCh38.86 47_UR.sniffles.vcf > 47_UR.ann.vcf
+
+
+####################################################################
+# QDNAseq tool x CNV (lavora sui bin)
+# pacchetto R + file .bam + file .bed
+
+R
+library(QDNAseq)
+
+readCounts <- binReadCounts(bins, bamfiles="combined_230OM.sorted.bam")
+# file 'combined_230OM.sorted.bam' from the current working directory
+bins <- readBins("nf2_bnd.regions.bed")
+# generazione bins (piu sono piccole e piu risoluzione ho) # bins <- getBinAnnotations(binSize=50, genome="hg19")
+
+
+
+# Pulizia e correzioni
+readCountsFiltered <- applyFilters(readCounts)
+readCountsCorrected <- estimateCorrection(readCountsFiltered)
+
+# Normalizzazione e segmentazione
+copyNumbers <- normalize(readCountsCorrected)
+copyNumbersSegmented <- segmentBins(copyNumbers)
+copyNumbersCalled <- callBins(copyNumbersSegmented)
+
+# Visualizzazione
+plot(copyNumbersCalled)
+# solo un Chr in particolare
+plot(copyNumbersCalled, chromosomes=22)
+
+
+
+
+#####################################################################
+#### svim
+# l'input in .bam sortato e indicizzato
+47_UR.sorted.bam
+47_UG.sorted.bam
+# parametri:
+svim alignment -h #display all parameters
+
+
+svim alignment 47_UR 47_UR.sorted.bam /data/ref/grch38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna 
+
+svim alignment 47_UG 47_UG.sorted.bam /data/ref/grch38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fna 
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+#########   lavorare sui .vcf    ######################
+# guardo le righe che mi interessano, per capire la struttura del file
+head -300 47_UR.sniffles.vcf
+
+# cerco nel cromosoma 16, se ci sono DUPlicazioni
+cd /percorso/output/da/analizzare
+grep "chr16" 47_UR.sniffles.vcf | grep "DUP"
+
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+# RIBBON - IMMAGINI DELLE VARIANTI
+# https://genomeribbon.com/
+
+
